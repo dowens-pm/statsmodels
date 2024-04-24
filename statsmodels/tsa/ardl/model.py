@@ -26,6 +26,7 @@ from statsmodels.base.data import PandasData
 import statsmodels.base.wrapper as wrap
 from statsmodels.iolib.summary import Summary, summary_params
 from statsmodels.regression.linear_model import OLS
+from statsmodels.regression.quantile_regression import QuantReg
 from statsmodels.tools.decorators import cache_readonly
 from statsmodels.tools.docstring import Docstring, Parameter, remove_parameters
 from statsmodels.tools.sm_exceptions import SpecificationWarning
@@ -456,25 +457,37 @@ class ARDL(AutoReg):
 
     def _fit(
         self,
+        method: Literal["ols", "quantile"] = "ols",
         cov_type: str = "nonrobust",
         cov_kwds: dict[str, Any] = None,
         use_t: bool = True,
+        q : float = 0.5,
+        vcov: str = 'robust',
+        kernel: str = 'epa',
+        bandwidth: str = 'hsheather',
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self._x.shape[1] == 0:
             return np.empty((0,)), np.empty((0, 0)), np.empty((0, 0))
-        ols_mod = OLS(self._y, self._x)
-        ols_res = ols_mod.fit(
-            cov_type=cov_type, cov_kwds=cov_kwds, use_t=use_t
-        )
-        cov_params = ols_res.cov_params()
-        use_t = ols_res.use_t
-        if cov_type == "nonrobust" and not use_t:
-            nobs = self._y.shape[0]
-            k = self._x.shape[1]
-            scale = nobs / (nobs - k)
-            cov_params /= scale
+        if method == "ols":
+            ols_mod = OLS(self._y, self._x)
+            ols_res = ols_mod.fit(
+                cov_type=cov_type, cov_kwds=cov_kwds, use_t=use_t
+            )
+            cov_params = ols_res.cov_params()
+            use_t = ols_res.use_t
+            if cov_type == "nonrobust" and not use_t:
+                nobs = self._y.shape[0]
+                k = self._x.shape[1]
+                scale = nobs / (nobs - k)
+                cov_params /= scale
 
-        return ols_res.params, cov_params, ols_res.normalized_cov_params
+            return ols_res.params, cov_params, ols_res.normalized_cov_params
+        elif method == "quantile": ## NEW CODE
+            quantile_mod = QuantReg(self._y, self._x)
+            quantile_res = quantile_mod.fit(
+                q=q, vcov=vcov, kernel=kernel, bandwidth=bandwidth,
+            ) 
+            return quantile_res.params, np.empty((0, 0)), quantile_res.normalized_cov_params
 
     def fit(
         self,
@@ -482,6 +495,10 @@ class ARDL(AutoReg):
         cov_type: str = "nonrobust",
         cov_kwds: dict[str, Any] = None,
         use_t: bool = True,
+        q : float = 0.5,
+        vcov: str = 'robust',
+        kernel: str = 'epa',
+        bandwidth: str = 'hsheather',
     ) -> ARDLResults:
         """
         Estimate the model parameters.
@@ -518,6 +535,10 @@ class ARDL(AutoReg):
             uses the normal distribution. If None, defers the choice to
             the cov_type. It also removes degree of freedom corrections from
             the covariance estimator when cov_type is 'nonrobust'.
+        q : float,
+        vcov: str,
+        kernel: str,
+        bandwidth: str,
 
         Returns
         -------
@@ -540,7 +561,8 @@ class ARDL(AutoReg):
         covariance.
         """
         params, cov_params, norm_cov_params = self._fit(
-            cov_type=cov_type, cov_kwds=cov_kwds, use_t=use_t
+            cov_type=cov_type, cov_kwds=cov_kwds, use_t=use_t,
+            q=q, vcov=vcov, kernel = kernel, bandwidth = bandwidth,
         )
         res = ARDLResults(
             self, params, cov_params, norm_cov_params, use_t=use_t
@@ -1005,6 +1027,10 @@ class ARDLResults(AutoRegResults):
         An estimate of the scale of the model.
     use_t : bool
         Whether use_t was set in fit
+    q : float,
+    vcov: str,
+    kernel: str,
+    bandwidth: str,    
     """
 
     _cache = {}  # for scale setter
@@ -1017,6 +1043,10 @@ class ARDLResults(AutoRegResults):
         normalized_cov_params: Float64Array | None = None,
         scale: float = 1.0,
         use_t: bool = False,
+        q : float = 0.5,
+        vcov: str = "robust",
+        kernel: str = 'epa',
+        bandwidth: str = 'hsheather',
     ):
         super().__init__(
             model, params, normalized_cov_params, scale, use_t=use_t
@@ -1032,6 +1062,11 @@ class ARDLResults(AutoRegResults):
             self._max_lag = max(self._ar_lags)
         self._hold_back = self.model.hold_back
         self.cov_params_default = cov_params
+
+        self.q=q
+        self.vcov=vcov
+        self.kernel=kernel
+        self.bandwidth=bandwidth
 
     @Appender(remove_parameters(ARDL.predict.__doc__, "params"))
     def predict(
